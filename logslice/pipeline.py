@@ -1,58 +1,64 @@
-"""Compose slicer, filter, and formatter into a single processing pipeline."""
+"""High-level pipeline that wires slicer, filter, formatter and stats together."""
 
-from typing import IO, Iterable, Iterator, Optional
+from __future__ import annotations
 
-from logslice.filter import filter_lines, keyword_filter
+import sys
+from typing import IO, Optional
+
+from logslice.filter import compile_pattern, filter_lines, keyword_filter
 from logslice.formatter import format_lines, print_summary
 from logslice.highlighter import highlight_lines
-from logslice.slicer import slice_log
+from logslice.parser import parse_user_datetime
+from logslice.slicer import slice_log, count_lines
+from logslice.stats import build_stats, finalise_stats
+from logslice.reporter import maybe_report
 
 
 def run_pipeline(
-    source: Iterable[str],
+    source: IO[str],
     *,
     start: Optional[str] = None,
     end: Optional[str] = None,
-    include_pattern: Optional[str] = None,
-    exclude_pattern: Optional[str] = None,
-    keywords: Optional[list] = None,
+    pattern: Optional[str] = None,
+    keywords: Optional[list[str]] = None,
     ignore_case: bool = False,
     numbered: bool = False,
     colour: bool = False,
-    show_summary: bool = False,
-    output: IO[str],
+    verbose: bool = False,
+    output: IO[str] = sys.stdout,
+    source_name: str = "",
 ) -> int:
-    """Run the full log-processing pipeline and write results to *output*.
-
-    Steps:
-        1. Slice lines by time range (start / end).
-        2. Apply regex include / exclude filters.
-        3. Apply keyword filter if keywords are provided.
-        4. Optionally highlight lines by severity.
-        5. Write formatted lines to *output*.
-        6. Optionally print a summary line.
-
-    Returns:
-        Number of lines written.
     """
-    stream: Iterator[str] = slice_log(source, start=start, end=end)
+    Execute the full logslice pipeline.
 
-    stream = filter_lines(
-        stream,
-        include_pattern=include_pattern,
-        exclude_pattern=exclude_pattern,
-        ignore_case=ignore_case,
-    )
+    Returns the number of lines written to *output*.
+    """
+    stats = build_stats(source_name)
+
+    start_dt = parse_user_datetime(start) if start else None
+    end_dt = parse_user_datetime(end) if end else None
+
+    regex = compile_pattern(pattern, ignore_case=ignore_case) if pattern else None
+
+    lines = slice_log(source, start=start_dt, end=end_dt)
+
+    if regex is not None:
+        lines = filter_lines(lines, regex)
 
     if keywords:
-        stream = keyword_filter(stream, keywords, ignore_case=ignore_case)
+        lines = keyword_filter(lines, keywords, ignore_case=ignore_case)
 
     if colour:
-        stream = highlight_lines(stream)
+        lines = highlight_lines(lines)
 
-    count = format_lines(stream, output=output, numbered=numbered)
+    written = format_lines(
+        lines,
+        output=output,
+        numbered=numbered,
+        stats=stats,
+    )
 
-    if show_summary:
-        print_summary(count, output=output)
+    finalise_stats(stats)
+    maybe_report(stats, verbose=verbose)
 
-    return count
+    return written
